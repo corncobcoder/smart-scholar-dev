@@ -1,0 +1,59 @@
+import * as FilePond from 'filepond';
+import FilePondPluginImagePreview from 'filepond-plugin-image-preview';
+import FilePondPluginFileValidateType from 'filepond-plugin-file-validate-type';
+import FilePondPluginFileValidateSize from 'filepond-plugin-file-validate-size';
+
+// Import styles
+import 'filepond/dist/filepond.min.css';
+import 'filepond-plugin-image-preview/dist/filepond-plugin-image-preview.css';
+
+// Register plugins
+FilePond.registerPlugin(
+  FilePondPluginImagePreview,
+  FilePondPluginFileValidateType,
+  FilePondPluginFileValidateSize
+);
+
+// Initialize
+document.addEventListener("DOMContentLoaded", function() {
+  const form = document.querySelector('form');
+  const fileInputs = document.querySelectorAll('input[type="file"]');
+  
+  fileInputs.forEach(input => {
+    FilePond.create(input, {
+      allowMultiple: false,
+      maxFileSize: '2MB',
+      acceptedFileTypes: ['image/jpeg', 'image/png', 'image/jpg'],
+      credits: false,
+      storeAsFile: true,
+      imagePreviewMaxHeight: 300,
+      labelIdle: `📂 Drag & Drop your file or <span class="filepond--label-action">Browse</span>`,
+    });
+  });
+
+  form.addEventListener('submit', function (e) {
+    e.preventDefault(); // prevent default submission
+    Swal.fire({
+      title: 'Are you sure?',
+      text: "Please confirm that all information is correct.",
+      icon: 'question',
+      showCancelButton: true,
+      confirmButtonText: 'Yes, submit!',
+      cancelButtonText: 'Cancel'
+    }).then((result) => {
+      if (result.isConfirmed) {
+        Swal.fire({
+          title: 'Uploading...',
+          text: 'Please wait while your files are being uploaded.',
+          allowOutsideClick: false,
+          allowEscapeKey: false,
+          showConfirmButton: false,
+          didOpen: () => {
+            Swal.showLoading();
+          }
+        });
+        form.submit(); // submit form after showing loader
+      }
+    });
+  });
+});

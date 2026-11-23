@@ -1,0 +1,369 @@
+<?php
+
+namespace App\Http\Controllers\Pages;
+
+use App\Http\Controllers\Controller;
+use Illuminate\Http\Request;
+use App\Models\Scholarship;
+use App\Models\GeneralInfo;
+use App\Models\FamilyMember;
+use App\Models\FileUpload;
+use Illuminate\Support\Facades\Auth;
+use Cloudinary\Cloudinary;
+
+class ScholarshipController extends Controller
+{   
+    private function getCloudinary()
+    {
+        return new Cloudinary([
+            'cloud' => [
+                'cloud_name' => env('CLOUDINARY_CLOUD_NAME'),
+                'api_key' => env('CLOUDINARY_API_KEY'),
+                'api_secret' => env('CLOUDINARY_API_SECRET'),
+            ],
+        ]);
+    }
+    public function index(Request $request)
+    {
+        $query = Scholarship::query();
+
+        if ($request->filled('education_level')) {
+            $query->where('education_level', $request->education_level);
+        }
+
+        if ($request->filled('status')) {
+            $query->where('status', $request->status);
+        }
+
+        if ($request->filled('search')) {
+            $search = $request->search;
+            $query->where(function ($q) use ($search) {
+                $q->where('title', 'like', "%{$search}%")
+                ->orWhere('description', 'like', "%{$search}%")
+                ->orWhere('funder', 'like', "%{$search}%");
+            });
+        }
+
+        $scholarships = $query->orderBy('created_at', 'desc')->paginate(5)->appends($request->query());
+
+        $user = Auth::user();
+
+        if ($user) {
+            foreach ($scholarships as $scholarship) {
+                $scholarship->has_applied = FileUpload::where('user_id', $user->id)->where('scholarship_id', $scholarship->id)->exists();
+            }
+        } 
+
+        return view('scholarships.index', compact('scholarships'));
+    }
+
+    public function show($id) 
+    {
+        $scholarship = Scholarship::withCount('fileUploads')->findOrFail($id);
+        
+        $user = Auth::user();
+
+        $hasApplied = false;
+        $hasGeneralInfo = false;
+        $isOpen = true;
+
+        if ($user) {
+            $hasApplied = FileUpload::where('user_id', $user->id)->where('scholarship_id', $scholarship->id)->exists();
+            $hasGeneralInfo = GeneralInfo::where('user_id', $user->id)->exists();
+            $isOpen = $scholarship->status === 'Open';
+        }
+
+        return view('scholarships.show', compact('scholarship', 'hasApplied', 'hasGeneralInfo', 'isOpen'));
+    }
+
+    public function create($id)
+    {
+        $scholarship = Scholarship::findOrFail($id);
+        $user = Auth::user();
+
+        if ($scholarship->status === 'Close') {
+            return redirect()->route('scholarship.show', ['id' => $id])->with('error', 'This scholarship is already closed.');
+        }
+
+        $hasApplied = FileUpload::where('user_id', $user->id)->where('scholarship_id', $id)->exists();
+
+        if ($hasApplied) {
+            return redirect()->route('scholarship.show', ['id' => $id])->with('error', 'You have already applied for this scholarship.');
+        }
+
+        $hasGeneralInfo = GeneralInfo::where('user_id', $user->id)->exists();
+        if ($hasGeneralInfo) {
+            return redirect()->route('scholarship.upload', ['id' => $id]);
+        }
+
+        return view('scholarships.create', compact('scholarship'));
+    }
+
+    public function upload($id)
+    {
+        $scholarship = Scholarship::findOrFail($id);
+        $user = Auth::user();
+
+        if ($scholarship->status === 'Close') {
+            return redirect()->route('scholarship.show', ['id' => $id])->with('error', 'This scholarship is already closed.');
+        }
+
+        $hasGeneralInfo = GeneralInfo::where('user_id', $user->id)->exists();
+
+        if (!$hasGeneralInfo) {
+            return redirect()->route('scholarship.create', ['id' => $id])->with('error', 'Please fill out your general information first.');
+        }
+
+        $hasApplied = FileUpload::where('user_id', $user->id)->where('scholarship_id', $id)->exists();
+
+        if ($hasApplied) {
+            return redirect()->route('scholarship.show', ['id' => $id])->with('error', 'You already submitted your application files.');
+        }
+
+        return view('scholarships.upload', compact('scholarship'));
+    }
+
+    public function progressReport($id)
+    {
+        $user = Auth::user();
+        $scholarship = Scholarship::findOrFail($id);
+
+        $fileUpload = FileUpload::where('user_id', $user->id)->where('scholarship_id', $id)->first();
+
+        if (!$fileUpload) {
+            return redirect()->route('scholarship.show', ['id' => $id])->with('error', 'You have not submitted any documents for this scholarship yet.');
+        }
+
+        return view('scholarships.progress', compact('scholarship', 'fileUpload'));
+    }
+
+    public function storeGeneralInfo(Request $request, $id)
+    {
+        $validated = $request->validate([
+            'client_name' => 'required|string|max:255',
+            'client_sex' => 'required|in:Male,Female',
+            'client_age' => 'required|integer|min:0',
+            'client_birthdate' => 'required|date',
+            'client_civil_status' => 'required|in:Single,Married,Others',
+            'client_birthplace' => 'required|string|max:255',
+            'client_address' => 'required|string|max:255',
+            'client_contact' => 'required|string|max:20',
+            'client_relationship' => 'required|string|max:255',
+            'client_religion' => 'required|string|max:255',
+            'client_nationality' => 'required|string|max:255',
+            'client_education' => 'required|in:Elementary,High School,Senior High School,College Undergraduate,College Graduate',
+            'client_philhealth' => 'required|string|max:50',
+            'client_occupation' => 'required|string|max:255',
+            'client_income' => 'required|in:less_10k,10k_20k,20k_50k,50k_100k,above_100k',
+            'client_admission_mode' => 'required|in:Walk-in,Referral,4Ps Beneficiary',
+            'client_referring_party' => 'required|string|max:255',
+            'client_referring_contact' => 'required|string|max:255',
+
+            // Beneficiary
+            'beneficiary_category' => 'required|string|max:255',
+            'beneficiary_id_no' => 'required|string|max:100',
+            'beneficiary_name' => 'required|string|max:255',
+            'beneficiary_sex' => 'required|in:Male,Female',
+            'beneficiary_birthdate' => 'required|date',
+            'beneficiary_birthplace' => 'required|string|max:255',
+            'beneficiary_civil_status' => 'required|in:Single,Married,Others',
+            'beneficiary_address' => 'required|string|max:255',
+
+            // Family members
+            'family_members' => 'array',
+            'family_members.*.last_name' => 'required|string|max:255',
+            'family_members.*.first_name' => 'required|string|max:255',
+            'family_members.*.middle_name' => 'required|string|max:255',
+            'family_members.*.sex' => 'required|in:Male,Female',
+            'family_members.*.birthdate' => 'required|date',
+            'family_members.*.civil_status' => 'required|in:Single,Married,Others',
+            'family_members.*.relationship' => 'required|string|max:255',
+            'family_members.*.education' => 'required|in:Elementary,High School,Senior High School,College Undergraduate,College Graduate',
+            'family_members.*.occupation' => 'required|string|max:255',
+            'family_members.*.income' => 'required|in:less_10k,10k_20k,20k_50k,50k_100k,above_100k',
+        ]);
+
+        $generalInfoData = [
+            'user_id' => Auth::id(),
+            'client_name' => $validated['client_name'],
+            'sex' => $validated['client_sex'],
+            'age' => $validated['client_age'],
+            'birth_date' => $validated['client_birthdate'],          
+            'civil_status' => $validated['client_civil_status'],
+            'birth_place' => $validated['client_birthplace'],
+            'address' => $validated['client_address'],
+            'contact_number' => $validated['client_contact'],
+            'relationship_to_beneficiary' => $validated['client_relationship'],
+            'religion' => $validated['client_religion'],
+            'nationality' => $validated['client_nationality'],
+            'education_level' => $validated['client_education'],
+            'philhealth_no' => $validated['client_philhealth'],
+            'occupation' => $validated['client_occupation'],
+            'income_range' => $validated['client_income'],
+            'mode_of_admission' => $validated['client_admission_mode'],
+            'referring_party' => $validated['client_referring_party'],
+            'referring_contact' => $validated['client_referring_contact'],
+
+            // Beneficiary
+            'beneficiary_category' => $validated['beneficiary_category'],
+            'beneficiary_id_no' => $validated['beneficiary_id_no'],
+            'beneficiary_name' => $validated['beneficiary_name'],
+            'beneficiary_sex' => $validated['beneficiary_sex'],
+            'beneficiary_birth_date' => $validated['beneficiary_birthdate'],
+            'beneficiary_birth_place' => $validated['beneficiary_birthplace'],
+            'beneficiary_civil_status' => $validated['beneficiary_civil_status'],
+            'beneficiary_address' => $validated['beneficiary_address'],
+        ];
+
+        GeneralInfo::create($generalInfoData);
+
+        if (!empty($validated['family_members'])) {
+            foreach ($validated['family_members'] as $member) {
+                FamilyMember::create([
+                    'user_id' => Auth::id(),
+                    'last_name' => $member['last_name'],
+                    'first_name' => $member['first_name'],
+                    'middle_name' => $member['middle_name'],
+                    'sex' => $member['sex'],
+                    'birthdate' => $member['birthdate'],
+                    'civil_status' => $member['civil_status'],
+                    'relationship' => $member['relationship'],
+                    'education' => $member['education'],
+                    'occupation' => $member['occupation'],
+                    'income' => $member['income'],
+                ]);
+            }
+        }
+
+        return redirect()->route('scholarship.upload', ['id' => $id])->with('success', 'General information saved successfully!');
+    }
+
+    public function storeFileUpload(Request $request, $id) 
+    {
+        $validated = $request->validate([
+            'school_registration_form' => 'required|file|mimes:jpg,jpeg,png|max:2048',
+            'barangay_clearance' => 'required|file|mimes:jpg,jpeg,png|max:2048',
+            'certificate_of_indigency' => 'required|file|mimes:jpg,jpeg,png|max:2048',
+            'school_id_front' => 'required|file|mimes:jpg,jpeg,png|max:2048',
+            'school_id_back' => 'required|file|mimes:jpg,jpeg,png|max:2048',
+            'cedula' => 'required|file|mimes:jpg,jpeg,png|max:2048',
+            'breakdown_of_expenses' => 'required|file|mimes:jpg,jpeg,png|max:2048',
+        ]);
+
+        $cloudinary = $this->getCloudinary();
+    
+        $paths = [];
+        $fields = [
+            'school_registration_form' => 'school_forms',
+            'barangay_clearance' => 'barangay_clearances',
+            'certificate_of_indigency' => 'indigency_certificates',
+            'school_id_front' => 'school_ids',
+            'school_id_back' => 'school_ids',
+            'cedula' => 'cedulas',
+            'breakdown_of_expenses' => 'expenses'
+        ];
+
+        foreach ($fields as $field => $folder) {
+        $uploadResult = $cloudinary->uploadApi()->upload(
+            $request->file($field)->getRealPath(),
+            [
+                'folder' => "smart_scholar/{$folder}",
+                'resource_type' => 'image'  // auto
+            ]
+        );
+        
+        $paths[$field] = $uploadResult['secure_url'];
+    }
+
+        FileUpload::create([
+            'user_id' => Auth::id(),
+            'scholarship_id' => $id,
+            'school_registration_form' => $paths['school_registration_form'],
+            'barangay_clearance' => $paths['barangay_clearance'],
+            'certificate_of_indigency' => $paths['certificate_of_indigency'],
+            'school_id_front' => $paths['school_id_front'],
+            'school_id_back' => $paths['school_id_back'],
+            'cedula' => $paths['cedula'],
+            'breakdown_of_expenses' => $paths['breakdown_of_expenses'],
+        ]);
+
+        return redirect()->route('scholarship')->with('success', 'Files uploaded successfully!');
+    }
+
+    public function resubmit(Request $request, $id)
+    {
+        $fileUpload = FileUpload::findOrFail($id);
+
+        $cloudinary = $this->getCloudinary();
+
+        $documents = [
+            'school_registration_form' => 'school_forms',
+            'barangay_clearance' => 'barangay_clearances',
+            'certificate_of_indigency' => 'indigency_certificates',
+            'school_id_front' => 'school_ids',
+            'school_id_back' => 'school_ids',
+            'cedula' => 'cedulas',
+            'breakdown_of_expenses' => 'expenses',
+        ];
+
+        $request->validate([
+            'school_registration_form' => 'nullable|file|mimes:jpg,jpeg,png|max:2048',
+            'barangay_clearance' => 'nullable|file|mimes:jpg,jpeg,png|max:2048',
+            'certificate_of_indigency' => 'nullable|file|mimes:jpg,jpeg,png|max:2048',
+            'school_id_front' => 'nullable|file|mimes:jpg,jpeg,png|max:2048',
+            'school_id_back' => 'nullable|file|mimes:jpg,jpeg,png|max:2048',
+            'cedula' => 'nullable|file|mimes:jpg,jpeg,png|max:2048',
+            'breakdown_of_expenses' => 'nullable|file|mimes:jpg,jpeg,png|max:2048',
+        ]);
+
+        foreach ($documents as $field => $folder) {
+            if ($request->hasFile($field)) {
+
+                $uploadResult = $cloudinary->uploadApi()->upload(
+                    $request->file($field)->getRealPath(),
+                    [
+                        'folder' => "smart_scholar/{$folder}",
+                        'resource_type' => 'image'  // Always image now
+                    ]
+                );
+
+                $fileUpload->$field = $uploadResult['secure_url'];
+
+                $remarkField = 'remarks_' . $field;
+                $fileUpload->$remarkField = 'No Remarks';
+            }
+        }
+
+        $fileUpload->progress = 'Under Review';
+        $fileUpload->save();
+
+        return back()->with('success', 'Documents successfully resubmitted and are now under review.');
+    }
+
+    public function downloadCurrentFile($id, $field)
+    {
+        $fileUpload = FileUpload::findOrFail($id);
+
+        $validFields = [
+            'school_registration_form',
+            'barangay_clearance',
+            'certificate_of_indigency',
+            'school_id_front',
+            'school_id_back',
+            'cedula',
+            'breakdown_of_expenses'
+        ];
+
+        if (!in_array($field, $validFields)) {
+            abort(404);
+        }
+        
+        $cloudinaryUrl = $fileUpload->$field;
+
+        if (!$cloudinaryUrl) {
+            abort(404, 'File not found');
+        }
+
+        return redirect($cloudinaryUrl);
+    }
+}
